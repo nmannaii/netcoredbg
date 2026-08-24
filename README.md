@@ -1,3 +1,5 @@
+> ⚡️ This is a fork with a tweak for personal use. Adding --no-redirect flag and some tweaks so i can use it to debug dotnet applications in neovim in external terminal instead of dap console.
+
 # Debugger for the .NET Core Runtime
 
 The NetCoreDbg debugger implements [GDB/MI](https://sourceware.org/gdb/onlinedocs/gdb/GDB_002fMI.html)
