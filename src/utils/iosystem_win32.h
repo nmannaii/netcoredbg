@@ -67,7 +67,8 @@ template <> struct IOSystemTraits<Win32PlatformTag>
     using IOResult = IOSystem::IOResult;
 
     static std::pair<FileHandle, FileHandle> unnamed_pipe();
-    static FileHandle listen_socket(unsigned tcp_port);
+    static FileHandle listen_socket(unsigned &tcp_port);
+    static FileHandle accept_socket(const FileHandle &listening);
     static IOResult set_inherit(const FileHandle &, bool);
     static IOResult read(const FileHandle &, void *buf, size_t count);
     static IOResult write(const FileHandle &, const void *buf, size_t count);

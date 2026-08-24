@@ -142,10 +142,16 @@ template <typename Traits> struct IOSystemImpl
         return {pipe.first, pipe.second};
     }
 
-    /// Function creates listening TCP socket on given port, waits, accepts single
-    /// connection, and return file descriptor related to the accepted connection.
+    /// Function creates listening TCP socket (bound to loopback) on given port and
+    /// returns file handle of the listening socket. If `tcp_port` is 0, an arbitrary
+    /// free port is allocated by the OS and `tcp_port` is set to the port really used.
     /// In case of error, empty file handle will be returned.
-    static FileHandle listen_socket(unsigned tcp_port) { return Traits::listen_socket(tcp_port); }
+    static FileHandle listen_socket(unsigned &tcp_port) { return Traits::listen_socket(tcp_port); }
+
+    /// Function waits and accepts single connection on the listening socket created by
+    /// `listen_socket`, closes the listening socket and returns file handle related to
+    /// the accepted connection. In case of error, empty file handle will be returned.
+    static FileHandle accept_socket(FileHandle listening) { return Traits::accept_socket(listening.handle); }
 
     /// Function perform reading from the file: it may read up to `count' bytes to `buf'.
     static IOResult read(FileHandle fh, void *buf, size_t count) { return Traits::read(fh.handle, buf, count); }
