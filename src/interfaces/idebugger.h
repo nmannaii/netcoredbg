@@ -69,6 +69,9 @@ public:
     virtual void SetStepFiltering(bool enable) = 0;
     virtual bool IsHotReload() const = 0;
     virtual HRESULT SetHotReload(bool enable) = 0;
+    // When disabled, debuggee inherits debugger's stdin/stdout/stderr instead of having them
+    // redirected into protocol's output events (see `--no-redirect` command line option).
+    virtual void SetRedirectStdio(bool enable) { (void)enable; }
 #ifdef INTEROP_DEBUGGING
     virtual void SetInteropDebugging(bool enable) = 0;
 #endif

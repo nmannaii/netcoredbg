@@ -208,6 +208,7 @@ ManagedDebuggerBase::ManagedDebuggerBase(IProtocol *pProtocol_) :
     m_stepFiltering(true),
     m_hotReload(false),
     m_interopDebugging(false),
+    m_redirectStdio(true),
     m_unregisterToken(nullptr),
     m_processId(0),
     m_ioredirect(
@@ -736,14 +737,18 @@ HRESULT ManagedDebuggerHelpers::RunProcess(const std::string& fileExec, const st
             m_cwd.clear();
     }
 
-    Status = m_ioredirect.exec([&]() -> HRESULT {
+    auto createProcess = [&]() -> HRESULT {
             IfFailRet(m_dbgshim.CreateProcessForLaunch(reinterpret_cast<LPWSTR>(const_cast<WCHAR*>(to_utf16(ss.str()).c_str())),
                                      /* Suspend process */ TRUE,
                                      outEnv.empty() ? NULL : &outEnv[0],
                                      m_cwd.empty() ? NULL : reinterpret_cast<LPCWSTR>(to_utf16(m_cwd).c_str()),
                                      &m_processId, &resumeHandle));
             return Status;
-        });
+        };
+
+    // In `--no-redirect` mode debuggee inherits debugger's standard files as is, so that
+    // debuggee's console is the terminal debugger was started in (see `--no-redirect`).
+    Status = m_redirectStdio ? m_ioredirect.exec(createProcess) : m_ioredirect.exec_no_swap(createProcess);
 
     if (FAILED(Status))
         return Status;

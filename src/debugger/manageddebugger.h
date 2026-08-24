@@ -103,6 +103,7 @@ protected:
     bool m_stepFiltering;
     bool m_hotReload;
     bool m_interopDebugging;
+    bool m_redirectStdio;
 
     PVOID m_unregisterToken;
     DWORD m_processId;
@@ -159,6 +160,7 @@ public:
     void SetStepFiltering(bool enable) override;
     bool IsHotReload() const override { return m_hotReload; }
     HRESULT SetHotReload(bool enable) override;
+    void SetRedirectStdio(bool enable) override { m_redirectStdio = enable; }
 #ifdef INTEROP_DEBUGGING
     void SetInteropDebugging(bool enable) override;
 #endif

@@ -153,16 +153,14 @@ std::pair<Class::FileHandle, Class::FileHandle> Class::unnamed_pipe()
 }
 
 
-// Function creates listening TCP socket on given port, waits, accepts single
-// connection, and return file descriptor related to the accepted connection.
-// In case of error, empty file handle will be returned.
-Class::FileHandle Class::listen_socket(unsigned port)
+// Function creates listening TCP socket on given port and returns file descriptor of the
+// listening socket. If `port` is 0, an arbitrary free port is allocated by the OS and `port`
+// is set to the port really used. In case of error, empty file handle will be returned.
+Class::FileHandle Class::listen_socket(unsigned &port)
 {
-    assert(port > 0 && port < 65536);
+    assert(port < 65536);
 
-    int newsockfd;
-    socklen_t clilen;
-    struct sockaddr_in serv_addr, cli_addr;
+    struct sockaddr_in serv_addr;
 
     int sockFd = ::socket(AF_INET, SOCK_STREAM, 0);
     if (sockFd < 0)
@@ -181,7 +179,9 @@ Class::FileHandle Class::listen_socket(unsigned port)
     memset(&serv_addr, 0, sizeof(serv_addr));
 
     serv_addr.sin_family = AF_INET;
-    serv_addr.sin_addr.s_addr = INADDR_ANY;
+    // Note, debugger's protocol connection allows to run programs and to evaluate arbitrary
+    // expressions in debuggee, don't expose it outside of the local host.
+    serv_addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     serv_addr.sin_port = htons(port);
 
     if (::bind(sockFd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0)
@@ -191,7 +191,33 @@ Class::FileHandle Class::listen_socket(unsigned port)
         return {};
     }
 
+    if (port == 0)
+    {
+        // OS have picked the port for us, find out which one.
+        socklen_t addrlen = sizeof(serv_addr);
+        if (::getsockname(sockFd, (struct sockaddr *)&serv_addr, &addrlen) < 0)
+        {
+            ::close(sockFd);
+            perror("can't get socket name");
+            return {};
+        }
+        port = ntohs(serv_addr.sin_port);
+    }
+
     ::listen(sockFd, 1);
+
+    return sockFd;
+}
+
+// Function waits and accepts single connection on the listening socket, closes the listening
+// socket and returns file descriptor related to the accepted connection.
+// In case of error, empty file handle will be returned.
+Class::FileHandle Class::accept_socket(const FileHandle &listening)
+{
+    int newsockfd;
+    socklen_t clilen;
+    struct sockaddr_in cli_addr;
+    int sockFd = listening.fd;
 
 #ifdef DEBUGGER_FOR_TIZEN
     // On Tizen, launch_app won't terminate until stdin, stdout and stderr are closed.

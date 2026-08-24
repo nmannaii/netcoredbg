@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
 #include "utils/limits.h"
 
 #include "protocols/vscodeprotocol.h"
@@ -67,11 +68,19 @@ static void print_help()
         "--hot-reload                          Enable Hot Reload feature.\n"
 #endif
         "--run                                 Run program without waiting commands\n"
+        "--no-redirect                         Don't redirect debuggee's stdin/stdout/stderr into\n"
+        "                                      protocol's output events: debuggee inherits debugger's\n"
+        "                                      standard files, so its console is the terminal the\n"
+        "                                      debugger was started in.\n"
         "--engineLogging[=<path to log file>]  Enable logging to VsDbg-UI or file for the engine.\n"
         "                                      Only supported by the VsCode interpreter.\n"
         "--server[=port_num]                   Start the debugger listening for requests on the\n"
         "                                      specified TCP/IP port instead of stdin/out. If port is not specified\n"
-        "                                      TCP %i will be used.\n"
+        "                                      TCP %i will be used. If port is 0, an arbitrary free port\n"
+        "                                      is used (see --server-port-file).\n"
+        "--server-port-file=<file>             Write the TCP/IP port the debugger listens on to <file>.\n"
+        "                                      Allows the client which started the debugger with `--server=0`\n"
+        "                                      to find out which port was really used.\n"
         "--log[=<type>]                        Enable logging. Supported logging to file and to dlog (only for Tizen)\n"
         "                                      File log by default. File is created in 'current' folder.\n"
         "--version                             Displays the current version.\n",
@@ -128,16 +137,51 @@ ProtocolHolder instantiate_protocol<CLIProtocol>(Streams streams)
 }
 
 
+// Function writes TCP/IP port, debugger listens on, to the file `path`. File is created
+// atomically (via rename), so that client never reads partially written file.
+static void write_server_port_file(const std::string &path, unsigned port)
+{
+    std::string tmpPath = path + ".tmp";
+
+    FILE *file = fopen(tmpPath.c_str(), "w");
+    if (!file)
+    {
+        fprintf(stderr, "can't create %s: %s\n", tmpPath.c_str(), strerror(errno));
+        exit(EXIT_FAILURE);
+    }
+
+    fprintf(file, "%u\n", port);
+    if (fclose(file) != 0 || rename(tmpPath.c_str(), path.c_str()) != 0)
+    {
+        fprintf(stderr, "can't write %s: %s\n", path.c_str(), strerror(errno));
+        remove(tmpPath.c_str());
+        exit(EXIT_FAILURE);
+    }
+}
+
 // function creates pair of input/output streams for debugger protocol
 template <typename Holder>
-Streams open_streams(Holder& holder, unsigned server_port, ProtocolConstructor constructor)
+Streams open_streams(Holder& holder, bool server_mode, unsigned server_port,
+                     const std::string &server_port_file, ProtocolConstructor constructor)
 {
-    if (server_port != 0)
+    if (server_mode)
     {
-        IOSystem::FileHandle socket = IOSystem::listen_socket(server_port);
-        if (! socket)
+        IOSystem::FileHandle listening = IOSystem::listen_socket(server_port);
+        if (! listening)
         {
             fprintf(stderr, "can't open listening socket for port %u\n", server_port);
+            exit(EXIT_FAILURE);
+        }
+
+        // Note, `server_port` now holds the port really used (`--server=0` asks OS to pick one),
+        // report it before `accept_socket()` blocks waiting for the client to connect.
+        if (!server_port_file.empty())
+            write_server_port_file(server_port_file, server_port);
+
+        IOSystem::FileHandle socket = IOSystem::accept_socket(listening);
+        if (! socket)
+        {
+            fprintf(stderr, "can't accept connection on port %u\n", server_port);
             exit(EXIT_FAILURE);
         }
 
@@ -184,7 +228,8 @@ static void FindAndParseArgs(char **argv, std::vector<std::pair<std::string, std
 }
 
 static void CheckStartOptions(ProtocolConstructor &protocol_constructor, std::vector<string_view> &initCommands,
-                              char* argv[], std::string &execFile, bool run, uint16_t serverPort)
+                              char* argv[], std::string &execFile, bool run, bool serverMode,
+                              const std::string &serverPortFile)
 {
     if (protocol_constructor != &instantiate_protocol<CLIProtocol> && !initCommands.empty())
     {
@@ -198,9 +243,15 @@ static void CheckStartOptions(ProtocolConstructor &protocol_constructor, std::ve
         exit(EXIT_FAILURE);
     }
 
-    if (protocol_constructor == &instantiate_protocol<CLIProtocol> && serverPort)
+    if (protocol_constructor == &instantiate_protocol<CLIProtocol> && serverMode)
     {
         fprintf(stderr, "server mode can't be used with CLI interpreter!\n");
+        exit(EXIT_FAILURE);
+    }
+
+    if (!serverPortFile.empty() && !serverMode)
+    {
+        fprintf(stderr, "--server-port-file option can be used only with --server!\n");
         exit(EXIT_FAILURE);
     }
 }
@@ -255,13 +306,16 @@ int
     std::vector<std::string> initTexts;
     std::vector<string_view> initCommands;
 
-    uint16_t serverPort = 0;
+    bool serverMode = false;
+    unsigned serverPort = 0;
+    std::string serverPortFile;
 
     std::string execFile;
     std::vector<std::string> execArgs;
 
     bool needHotReload = false;
     bool needInteropDebugging = false;
+    bool noRedirect = false;
     bool run = false;
 
     std::unordered_map<std::string, std::function<void(int& i)>> entireArguments
@@ -306,6 +360,11 @@ int
         { "--hot-reload", [&](int& i){
 
             needHotReload = true;
+
+        } },
+        { "--no-redirect", [&](int& i){
+
+            noRedirect = true;
 
         } },
         { "--run", [&](int& i){
@@ -370,6 +429,7 @@ int
         } },
         { "--server", [&](int& i){
 
+            serverMode = true;
             serverPort = DEFAULT_SERVER_PORT;
 
         } },
@@ -414,10 +474,23 @@ int
         { "--server=", [&](int& i){
 
             char *err;
-            serverPort = static_cast<uint16_t>(strtoul(argv[i] + strlen("--server="), &err, 10));
-            if (*err != 0)
+            const char *arg = argv[i] + strlen("--server=");
+            unsigned long port = strtoul(arg, &err, 10);
+            if (*arg == 0 || *err != 0 || port > 65535)
             {
-                fprintf(stderr, "Error: Missing server port\n");
+                fprintf(stderr, "Error: Invalid server port\n");
+                exit(EXIT_FAILURE);
+            }
+            serverMode = true;
+            serverPort = static_cast<unsigned>(port);
+
+        } },
+        { "--server-port-file=", [&](int& i){
+
+            serverPortFile = argv[i] + strlen("--server-port-file=");
+            if (serverPortFile.empty())
+            {
+                fprintf(stderr, "Error: Missing server port file name\n");
                 exit(EXIT_FAILURE);
             }
 
@@ -437,14 +510,14 @@ int
         }
     }
 
-    CheckStartOptions(protocol_constructor, initCommands, argv, execFile, run, serverPort);
+    CheckStartOptions(protocol_constructor, initCommands, argv, execFile, run, serverMode, serverPortFile);
 
     LOGI("Netcoredbg started");
     // Note: there is no possibility to know which exception caused call to std::terminate
     std::set_terminate([]{ LOGF("Netcoredbg is terminated due to call to std::terminate: see stderr..."); });
 
     std::vector<std::unique_ptr<std::ios_base> > streams;
-    std::shared_ptr<IProtocol> protocol = protocol_constructor(open_streams(streams, serverPort, protocol_constructor));
+    std::shared_ptr<IProtocol> protocol = protocol_constructor(open_streams(streams, serverMode, serverPort, serverPortFile, protocol_constructor));
 
     if (engineLogging)
     {
@@ -471,6 +544,7 @@ int
     }
 
     protocol->SetDebugger(debugger);
+    debugger->SetRedirectStdio(!noRedirect);
     if (needHotReload)
     {
         if (pidDebuggee == 0)

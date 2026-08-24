@@ -82,6 +82,19 @@ public:
             std::get<IOSystem::Stdout>(m_pipes),
             std::get<IOSystem::Stderr>(m_pipes)});
 
+        return exec_no_swap(func, std::forward<Args>(args)...);
+    }
+
+    /// Same as `exec`, but standard input/output files are NOT substituted: the process
+    /// started by `func` inherits debugger's stdin/stdout/stderr as is. This is used for
+    /// the `--no-redirect` mode, where debuggee's console is the debugger's own terminal
+    /// instead of the protocol's output events.
+    ///
+    /// Note: this function closes files, so it can be called only once!
+    ///
+    template <typename Func, typename... Args>
+    typename std::result_of<Func(Args...)>::type exec_no_swap(Func func, Args&&... args)
+    {
         // close "remote" pipe ends
         auto on_exit = [&](void *) {
             IOSystem::close(std::get<IOSystem::Stdin>(m_pipes));
